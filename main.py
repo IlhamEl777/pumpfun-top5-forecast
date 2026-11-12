@@ -22,7 +22,9 @@ final one):
   square root of the horizon and is wider for curve coins than pool coins.
 * Coins the history cannot name at a place (launched after the cut, or never
   ranked) are modelled as a field of pseudo-coins whose caps are drawn from
-  the distribution of peak caps that young coins reached inside the history.
+  the distribution of peak caps that young coins reached inside the history,
+  each minus a horizon-decaying shortfall (a newborn at a near read has
+  usually not yet reached, or has retraced from, its lifetime peak).
   In the Monte Carlo they compete for places like any coin; the probability
   mass they win is exactly the mass the forecast leaves unnamed at each
   place, which the scoring spreads over the answer chart's unnamed coins.
@@ -152,6 +154,9 @@ def newcomer_stats(coins, t0):
     cut = peaks[int(0.97 * len(peaks)):]
     if len(cut) < 8:
         cut = peaks[-max(8, len(peaks) // 20):]
+    # Raw mean of the top peaks. The caller discounts this towards what a
+    # young coin is worth at an answer read (see the new_mu adjustment in
+    # main): a lifetime peak overstates a newborn's cap at a near read.
     mu = sum(cut) / len(cut)
     var = sum((p - mu) ** 2 for p in cut) / len(cut)
     return mu, max(0.30, math.sqrt(var))
@@ -204,7 +209,12 @@ def main():
         drift = venue_drift + 0.45 * c["slope"] + g_top
         drift = max(-0.22, min(0.18, drift))
         sdh *= 1.0 - 0.15 * min(1.0, c["age_h"] / 24.0)
-        base_sd = 0.30 if c["stale"] else 0.22
+        # A coin present in the last mark was measured minutes ago, so its
+        # projection starts tighter than 0.22: on the practice backtest the
+        # wider base spread donated probability mass to the pseudo-coin
+        # field and to far-tail outcomes (0.15 scored best of 0.12..0.26,
+        # monotonically). Stale coins keep the wider 0.30.
+        base_sd = 0.30 if c["stale"] else 0.15
         proj.append((c["mint"], c["x"], drift, sdh, base_sd))
 
     if new_stats is None:
@@ -212,7 +222,19 @@ def main():
         new_mu, new_sd = top_x - 0.3, 0.6
     else:
         new_mu, new_sd = new_stats
-        new_mu += 0.15 * min(1.0, h_mid / 6.0)
+        # Peak-to-read shortfall, decaying with horizon: a pseudo-coin's
+        # cap at a read is its lifetime peak minus a shortfall (it has not
+        # run up yet, or has retraced), modelled as an independent draw of
+        # mean and spread `disc`, so the field's centre drops by disc and
+        # its spread widens to sqrt(sd^2 + disc^2): most newborns sit far
+        # below their peaks while a few still rocket past the incumbents.
+        # Raw peaks with neither shift won ~61% of every place on the
+        # practice backtest, starving the named incumbents that in fact
+        # held most places. As the horizon grows a newborn has time to run
+        # to its peak, so disc fades (0.62 at 15 min, ~0.1 at 12 h).
+        disc = 0.7 / (1.0 + h_mid / 2.0)
+        new_mu += 0.15 * min(1.0, h_mid / 6.0) - disc
+        new_sd = math.sqrt(new_sd * new_sd + disc * disc)
 
     window_h = h_max  # reads end this many hours after the cut
     n_new = int(max(24, min(110, NEW_DRAWS_BASE + 5 * window_h)))
